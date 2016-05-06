@@ -1,25 +1,43 @@
 # originally from https://gist.github.com/dan-blanchard/7045057
+sudo: false
 language: python
+
 python:
   - "2.7"
+  - "3.3"
+  - "3.4"
+  - "3.5"
+
+cache:
+  apt: true
+  pip: true
+  directories:
+    - $HOME/.cache/pip
+    - $HOME/.local
+
 # Setup anaconda
 before_install:
   # Fake X environment (see http://docs.travis-ci.com/user/gui-and-headless-browsers/)
   - export DISPLAY=:99.0
   - sh -e /etc/init.d/xvfb start
   # Install miniconda
-  - wget http://repo.continuum.io/miniconda/Miniconda-latest-Linux-x86_64.sh -O miniconda.sh
-  - chmod +x miniconda.sh
-  - ./miniconda.sh -b
-  - export PATH=/home/travis/miniconda/bin:$PATH
-  - conda update --yes conda
-  # The next couple lines fix a crash with multiprocessing on Travis and are not specific to using Miniconda
-  - sudo rm -rf /dev/shm
-  - sudo ln -s /run/shm /dev/shm
+  # This comes from http://conda.pydata.org/docs/travis.html
+  - if [[ "${TRAVIS_PYTHON_VERSION%.*}" == "2" ]]; then
+      wget https://repo.continuum.io/miniconda/Miniconda-latest-Linux-x86_64.sh -O miniconda.sh;
+    else
+      wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh;
+    fi
+  - bash miniconda.sh -b -p $HOME/miniconda
+  - export PATH="$HOME/miniconda/bin:$PATH"
+  - hash -r
+  - conda config --set always_yes yes --set changeps1 no
+  - conda update -q conda
+  - conda info -a
+
 # Install packages
 install:
   # TODO: Figure out how to read this from requirements.txt
-  - conda install --yes python=$TRAVIS_PYTHON_VERSION atlas numpy scipy matplotlib nose sympy
+  - conda install --yes python=$TRAVIS_PYTHON_VERSION atlas numpy scipy matplotlib nose sympy future
   - pip install control
   # Coverage packages are on the binstar channel which no longer works
   - pip install python-coveralls nose-cov
@@ -33,3 +51,7 @@ script:
  
 after_success:
   - coveralls --config_file .coveragerc
+
+addons:
+    code_climate:
+        repo_token: 9170a5d7f8682e88b426fd95c2dcaed34f8f27fcf3b3c0bf6515a3e4b49694c9

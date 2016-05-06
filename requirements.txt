@@ -1,6 +1,6 @@
 control
+future
 matplotlib
-matplotlib.pyplot
 numpy
 scipy
 sympy
