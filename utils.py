@@ -7,6 +7,7 @@ Created on Jan 27, 2012
 from __future__ import division
 from __future__ import print_function
 import numpy  # do not abbreviate this module as np in utils.py
+import scipy
 import sympy  # do not abbreviate this module as sp in utils.py
 from scipy import optimize, signal
 import scipy.linalg as sc_linalg
@@ -266,7 +267,7 @@ class tf(object):
 
     def __rtruediv__(self, other):
         return tf(other)/self
-    
+
     def __div__(self, other):
         if not isinstance(other, tf):
             other = tf(other)
@@ -285,6 +286,12 @@ class tf(object):
         return r
 # TODO: Concatenate tf objects into MIMO structure
 
+def RHPonly(x):
+    RHPx = []
+    for i in range(len(x)):
+        if x[i].real > 0:
+            RHPx.append(numpy.round(x[i], 2))
+    return list(set(RHPx))
 
 @numpy.vectorize
 def evalfr(G, s):
@@ -373,6 +380,16 @@ class mimotf(object):
         # We only support matrices of transfer functions
         self.shape = self.matrix.shape
 
+    def mimotf_slice(self,rows,cols):
+        nRows = len(rows)
+        nCols = len(cols)
+        result = [[] for r in range(nRows)]
+        for r in range(nRows):
+            for c in range(nCols):
+                result[r].append(tf(list(self[r,c].numerator.coeffs), list(self[r,c].denominator.coeffs)))
+            
+        return mimotf(result)
+
     def det(self):
         return det(self.matrix)
 
@@ -382,12 +399,12 @@ class mimotf(object):
         >>> G = mimotf([[(s - 1) / (s + 2),  4 / (s + 2)],
         ...            [4.5 / (s + 2), 2 * (s - 1) / (s + 2)]])
         >>> G.poles()
-        array([-2.])
+        [-2.0]
         """
-        return self.det().poles()
+        return poles(self)
 
     def zeros(self):
-        return self.det().zeros()
+        return zeros(self)
 
     def cofactor_mat(self):
         A = self.matrix
@@ -495,13 +512,108 @@ class mimotf(object):
             return result
 
     def __slice__(self, i, j):
-        result = mimotf(self.matrix.__slice__(i, j))
+        result = mimotf(self.matrix[i, j])
         if result.shape == (1, 1):
             return result.matrix[0, 0]
         else:
             return result
 
+def scaling(G_hat,e,u,input_type = 'symbolic',Gd_hat=None,d=None):
+    """
+    Receives symbolic matrix of plant and disturbance transfer functions 
+    as well as array of maximum deviations, scales plant variables according to eq () and ()
+    
+    Parameters
+    -----------
+    G_hat       : matrix of plant WITHOUT deadtime
+    e           : array of maximum plant output variable deviations 
+                  in same order as G matrix plant outputs
+    u           : array of maximum plant input variable deviations 
+                  in same order as G matrix plant inputs
+    input_type  : specifies whether input is symbolic matrix or utils mimotf
+    Gd_hat      : optional
+                  matrix of plant disturbance model WITHOUT deadtime
+    d           : optional
+                  array of maximum plant disturbance variable deviations 
+                  in same order as Gd matrix plant disturbances
+    Returns
+    ----------
+    G_scaled   : scaled plant function
+    Gd_scaled  : scaled plant disturbance function
 
+    Example
+    -------
+    >>> s = sympy.Symbol("s")
+
+    >>> G_hat = sympy.Matrix([[1/(s + 2), s/(s**2 - 1)],
+    ...                       [5*s/(s - 1), 1/(s + 5)]])
+
+    >>> e = numpy.array([1,2])
+    >>> u = numpy.array([3,4])
+
+    >>> scaling(G_hat,e,u,input_type='symbolic')
+    Matrix([
+    [  3.0/(s + 2), 4.0*s/(s**2 - 1)],
+    [7.5*s/(s - 1),      2.0/(s + 5)]])
+
+    """
+    
+    De        = numpy.diag(e)
+    De_inv    = numpy.linalg.inv(De)
+    Du        = numpy.diag(u)
+    
+    if Gd_hat and d:
+        Dd = numpy.diag(d)
+
+    if input_type == 'symbolic':
+        G_scaled  = De_inv*(G_hat)*(Du)
+        if Gd_hat and d:
+            Dd        = np.diag(d)
+            Gd_scaled = De_inv*(Gd_hat)*(Dd)
+            if G_hat.shape == (1,1):
+                return G_scaled[0,0],Gd_scaled[0,0]
+            else:
+                return G_scaled,Gd_scaled
+        else:
+            if G_hat.shape == (1,1):
+                return G_scaled[0,0]
+            else:
+                return G_scaled
+            
+    elif input_type == 'mimotf':
+        De_inv_utils= [[] for r in range(De_inv.shape[0])]
+        Du_utils    = [[] for r in range(Du.shape[0])]
+
+        for r in range(De_inv.shape[0]):
+            for c in range(De_inv.shape[1]):
+                De_inv_utils[r].append(tf([De_inv[r,c]]))
+        for r in range(Du.shape[0]):
+            for c in range(Du.shape[1]):
+                Du_utils[r].append(tf([Du[r,c]]))
+        
+        De_inv_mimo = mimotf(De_inv_utils)
+        Du_mimo = mimotf(Du_utils)
+        G_scaled  = De_inv_mimo*(G_hat)*(Du_mimo)
+        
+        if Gd_hat and d:
+            Dd_utils    = [[] for r in range(Dd.shape[0])]
+            for r in range(Dd.shape[0]):
+                for c in range(Dd.shape[1]):
+                    Dd_utils[r].append(tf([Dd[r,c]]))
+            Dd_mimo = mimotf(Dd_utils)
+            Gd_scaled = De_inv_mimo*(Gd_hat)*(Dd_mimo)
+            if G_hat.shape == (1,1):
+                return G_scaled[0,0],Gd_scaled[0,0]
+            else:
+                return G_scaled,Gd_scaled
+        else:
+            if G_hat.shape == (1,1):
+                return G_scaled[0,0]
+            else:
+                return G_scaled
+    else:
+        raise ValueError('No input type specified')
+                
 def tf_step(G, t_end=10, initial_val=0, points=1000, constraint=None, Y=None, method='numeric'):
     """
     Validate the step response data of a transfer function by considering dead
@@ -1087,8 +1199,8 @@ def maxpeak(G, w_start=-2, w_end=2, points=1000):
     """
     w = numpy.logspace(w_start, w_end, points)
     s = 1j*w
-    
-    M = numpy.max(numpy.abs(G(s)))    
+
+    M = numpy.max(numpy.abs(G(s)))
 
     return M
 
@@ -1098,33 +1210,33 @@ def maxpeak(G, w_start=-2, w_end=2, points=1000):
 
 def sym2mimotf(Gmat):
     """Converts a MIMO transfer function system in sympy.Matrix form to a mimotf object making use of individual tf objects.
-    
-    Parameters 
+
+    Parameters
     ----------
     Gmat : sympy matrix
            The system transfer function matrix.
-    
+
     Returns
     -------
     Gmimotf : sympy matrix
               The mimotf system matrix
-        
+
     Example
     -------
     >>> s = sympy.Symbol("s")
-    
+
     >>> G = sympy.Matrix([[1/(s + 1), 1/(s + 2)],
     ...                   [1/(s + 3), 1/(s + 4)]])
-    
+
     >>> sym2mimotf(G)
     mimotf([[tf([ 1.], [ 1.  1.]) tf([ 1.], [ 1.  2.])]
      [tf([ 1.], [ 1.  3.]) tf([ 1.], [ 1.  4.])]])
-     
+
     """
     rows, cols = Gmat.shape
     #create empty list of lists. This will be appended to form mimotf input list
     Gtf=[[] for y in range(rows)]
-    
+
     for i in range(rows):
         for j in range(cols):
             G = Gmat[i,j]
@@ -1132,24 +1244,24 @@ def sym2mimotf(Gmat):
             Gnum = G.as_numer_denom()[0]
             if Gnum.is_Number: # can't convert single value to Poly
                 Gtf_num = float(Gnum)
-                
+
             else:
                 Gnum_poly = sympy.Poly(Gnum)
                 Gtf_num = [float(k) for k in Gnum_poly.all_coeffs()]
-                
+
             Gden = G.as_numer_denom()[1]
             if Gden.is_Number:
                 Gtf_den = float(Gden)
-                
+
             else:
                 Gden_poly = sympy.Poly(Gden)
                 Gtf_den = [float(k) for k in Gden_poly.all_coeffs()]
             Gtf[i].append(tf(Gtf_num,Gtf_den))
     Gmimotf = mimotf(Gtf)
-    
+
     return Gmimotf
-    
-    
+
+
 def RGAnumber(G, I):
     """
     Computes the RGA (Relative Gain Array) number of a matrix.
@@ -1451,11 +1563,11 @@ def state_observability_matrix(a, c):
 
     return observability_m
 
-    
+
 def Kalman_controllable(A,B,C):
     """Computes the Kalman Controllable Canonical Form of the inout system A, B, C, making use of QR Decomposition.
        Can be used in sequentially with Kalman_observable to obtain a minimal realisation.
-    Parameters 
+    Parameters
     ----------
     A : numpy matrix
         The system state matrix.
@@ -1467,7 +1579,7 @@ def Kalman_controllable(A,B,C):
         The number of significant
     factor : int
         The number of additional significant digits after the first significant digit to round the returned matrix elements to.
-        
+
     Returns
     -------
     Ac : numpy matrix
@@ -1476,21 +1588,21 @@ def Kalman_controllable(A,B,C):
          The input matrix of the controllable system
     Cc : numpy matrix
          The output matrix of the controllable system
-        
+
     Example
     -------
     >>> A = numpy.matrix([[0, 0, 0, 0],
     ...                   [0, -2, 0, 0],
     ...                   [2.5, 2.5, -1, 0],
     ...                   [2.5, 2.5, 0, -3]])
-    
+
     >>> B = numpy.matrix([[1],
     ...                   [1],
     ...                   [0],
     ...                   [0]])
-    
+
     >>> C = numpy.matrix([0, 0, 1, 1])
-    
+
     >>> Ac, Bc, Cc = Kalman_controllable(A, B, C)
     >>> def round(A):
     ...     return numpy.round(A + 1e-5, 3)
@@ -1498,23 +1610,23 @@ def Kalman_controllable(A,B,C):
     array([[-1.   , -0.196,  0.189],
            [-5.099, -1.962, -0.999],
            [ 0.   , -0.999, -2.038]])
-        
+
     >>> round(Bc)
     array([[-1.414],
            [ 0.   ],
            [ 0.   ]])
-        
+
     >>> round(Cc)
     array([[ 0.   ,  1.387,  0.053]])
     """
-    nstates = A.shape[1] #compute the number of states     
-    _, _, P = state_controllability(A,B) # compute the controllability matrix 
+    nstates = A.shape[1] #compute the number of states
+    _, _, P = state_controllability(A,B) # compute the controllability matrix
     RP = numpy.linalg.matrix_rank(P) # find the rank of the controllability matrix
-    
+
     if RP == nstates:
-        
+
         return A,B,C
-    
+
     elif RP < nstates:
         T, R = numpy.linalg.qr(P)# compute the QR decomposition of the controllability matrix
         T1 = numpy.matrix(T[:,0:RP]) # separate the controllable subspace of T
@@ -1522,15 +1634,15 @@ def Kalman_controllable(A,B,C):
         Ac = T1.T*A*T1#calculate the controllable state matrix
         Bc = T1.T*B#calculate the observable state matrix
         Cc = C*T1#calculate the observable output matrix
-        
+
         return Ac,Bc,Cc
-     
-     
+
+
 def Kalman_observable(A,B,C):
     """Computes the Kalman Observable Canonical Form of the inout system A, B, C, making use of QR Decomposition.
         Can be used in sequentially with Kalman_controllable to obtain a minimal realisation.
-     
-    Parameters 
+
+    Parameters
     ----------
     A : numpy matrix
         The system state matrix.
@@ -1542,7 +1654,7 @@ def Kalman_observable(A,B,C):
         The number of significant
     factor : int
         The number of additional significant digits after the first significant digit to round the returned matrix elements to.
-        
+
     Returns
     -------
     Ao : numpy matrix
@@ -1551,19 +1663,19 @@ def Kalman_observable(A,B,C):
         The input matrix of the observable system
     Co : numpy matrix
         The output matrix of the observable system
-        
+
     Example
     -------
     >>> A = numpy.matrix([[0, 0, 0, 0],
     ...                   [0, -2, 0, 0],
     ...                   [2.5, 2.5, -1, 0],
     ...                   [2.5, 2.5, 0, -3]])
-    
+
     >>> B = numpy.matrix([[1],
     ...                   [1],
     ...                   [0],
     ...                   [0]])
-    
+
     >>> C = numpy.matrix([0, 0, 1, 1])
     >>> Ao, Bo, Co = Kalman_observable(A, B, C)
     >>> def round(A):
@@ -1577,28 +1689,28 @@ def Kalman_observable(A,B,C):
     array([[ 0.   ],
            [-1.387],
            [ 0.053]])
-    
+
     >>> round(Co)
     array([[-1.414,  0.   ,  0.   ]])
     """
     nstates = A.shape[1] #compute the number of states
     Q = state_observability_matrix(A,C)# compute the observability matrix
     RQ = numpy.linalg.matrix_rank(Q) # compute the rank of the observability matrix
-    
+
     if RQ == nstates:
-        
+
         return A, B, C
-        
+
     elif RQ < nstates: #the system is not state observable
         V ,R = numpy.linalg.qr(Q.T) #compute the QR decomposition of the observability matrix
-        V1 = V[:,0:RQ]# separate out the elements of  the observable subspace 
+        V1 = V[:,0:RQ]# separate out the elements of  the observable subspace
         V2 = V[:,RQ:nstates] # separate out the elements othrogonal to the observable subspace
         Ao = V1.T*A*V1 # calculate the observable state matrix
         Bo = V1.T*B # calculate the observable input matrix
         Co = C*V1 # calculate the observable output matrix
-        
-        return Ao,Bo,Co 
-        
+
+        return Ao,Bo,Co
+
 
 def remove_uncontrollable_or_unobservable_states(a, b, c, con_or_obs_matrix, uncontrollable=True, unobservable=False,
                                                  rank=None):
@@ -1859,17 +1971,81 @@ def minimal_realisation(a, b, c):
 
     return Aco, Bco, Cco
 
-def minors(G,order):
+def num_denom (A, symbolic_expr = False):
+
+    sym_den = 0
+    sym_num = 0
+    s = sympy.Symbol('s')
+
+    if type(A) == mimotf:
+        denom   = 1
+        num     = 1
+        
+        denom = [numpy.poly1d(denom) * numpy.poly1d(A.matrix[0,j].denominator.coeffs) for j in range(A.matrix.shape[1])]
+        num   = [numpy.poly1d(num)   * numpy.poly1d(A.matrix[0,j].numerator.coeffs) for j in range(A.matrix.shape[1])]
+        if symbolic_expr == True:
+            for n in range(len(denom)):
+                sym_den = (sym_den + denom[- n- 1] * s**n).simplify()
+            for n in range(len(num)):
+                sym_num = (sym_num + num[- n- 1] * s**n).simplify()
+            return sym_num, sym_den
+        else:
+            return num, denom
+            
+    elif type(A) == tf:
+        denom = []
+        num = []
+            
+        denom = [list(A.denominator.coeffs)[n] for n in range(len(list(A.denominator.coeffs)))]
+        num   = [list(A.numerator.coeffs)[n] for n in range(len(list(A.numerator.coeffs)))]
+        if symbolic_expr == True:
+            for n in range(len(denom)):
+                sym_den = (sym_den + denom[- n - 1] * s**n).simplify()
+            for n in range(len(num)):
+                sym_num = (sym_num + num[- n - 1] * s**n).simplify()
+            return sym_num, sym_den
+        else:
+            return num, denom
+    #else:
+    #    sym_num, sym_den = A.as_numer_denom()
+    #    if not symbolic_expr:
+    #        num_poly   = sympy.Poly(sym_num)
+    #        numer      = [float(k) for k in num_poly.all_coeffs()]
+    #        den_poly   = sympy.Poly(sym_den)
+    #        denom      = [float(k) for k in den_poly.all_coeffs()]
+    #        return numer, denom
+    #    else:
+    #        return sym_num, sym_den
+
+def minors(G, order):
     '''
     Returns the order minors of a MIMO tf G.
     '''
     minor = []
     Nrows, Ncols = G.shape
-    for rowstokeep in itertools.combinations(range(Nrows),order):
-        for colstokeep in itertools.combinations(range(Ncols),order):
-            minor.append(G[rowstokeep,colstokeep].det().simplify())
-
+    for rowstokeep in itertools.combinations(range(Nrows), order):
+        for colstokeep in itertools.combinations(range(Ncols), order):
+            G_slice = G.mimotf_slice(rowstokeep,colstokeep)
+            if type(G_slice) == tf:
+                minor.append(G_slice)
+            elif (type(G_slice) == mimotf) and (G_slice.shape[0] == G_slice.shape[1]):
+                minor.append(G_slice.det())
     return minor
+
+
+def lcm_of_all_minors(G):
+    '''
+    Returns the lowest common multiple of all minors of G 
+    '''
+    Nrows, Ncols = G.shape
+    lcm = 1
+    for i in range(1, min(Nrows, Ncols) + 1, 1):
+        allminors = minors(G, i)
+        for m in allminors:
+            numer, denom = num_denom(m,symbolic_expr = True)
+            lcm = sympy.lcm(lcm, denom)
+    return lcm
+
 
 def poles(G):
     '''
@@ -1878,45 +2054,32 @@ def poles(G):
 
     Parameters
     ----------
-    G : numpy matrix (n x n)
+    G : sympy or mimotf matrix (n x n)
         The transfer function G(s) of the system.
 
     Returns
     -------
-    zero : array
-        List of zeros.
+    pole : array
+        List of poles.
 
     Example
     -------
-    >>> def G(s):
-    ...     return 1 / (s + 2) * numpy.matrix([[s - 1,  4],
-    ...                                       [4.5, 2 * (s - 1)]])
+    >>> s = tf([1,0],[1])
+    >>> G = mimotf([[(s - 1) / (s + 2), 4 / (s + 2)],
+    ...             [4.5 / (s + 2), 2 * (s - 1) / (s + 2)]])
     >>> poles(G)
-    [-2.00000000000000]
+    [-2.0]
 
-    Note
-    ----
-    Not applicable for a non-squared plant, yet.
     '''
+    if not (type(G) == tf or type(G) == mimotf):
+    	G = sym2mimotf(G)
 
-    s = sympy.Symbol('s')
-    G = sympy.Matrix(G(s))  # convert to sympy matrix object
-    #det = sympy.simplify(G.det())
-    #pole = sympy.solve(sympy.denom(det))
-        
-    Nrows, Ncols = G.shape
-    allminors = []
-    lcm = 1
-    for i in range(1,min(Nrows,Ncols)+1,1):
-        allminors = minors(G,i)
-        denominator = []
-        for m in allminors:
-            numer, denom = m.as_numer_denom()
-            lcm = sympy.lcm(lcm,denom)
-            
-    pole = sympy.solve(lcm,s)
-    
-    return pole
+    lcm = lcm_of_all_minors(G)
+    lcm_poly = sympy.Poly(lcm)
+    lcm_coeff = [float(k) for k in lcm_poly.all_coeffs()]
+    pole = numpy.roots(lcm_coeff)
+
+    return list(set(pole))
 
 
 def zeros(G=None, A=None, B=None, C=None, D=None):
@@ -1928,7 +2091,7 @@ def zeros(G=None, A=None, B=None, C=None, D=None):
 
     Parameters
     ----------
-    G : numpy matrix (n x n)
+    G : sympy or mimotf matrix (n x n)
         The transfer function G(s) of the system.
     A, B, C, D : numpy matrix
         State space parameters
@@ -1936,15 +2099,15 @@ def zeros(G=None, A=None, B=None, C=None, D=None):
     Returns
     -------
     zero : array
-        List of zeros.
+           List of zeros.
 
     Example
     -------
-    >>> def G(s):
-    ...     return 1 / (s + 2) * numpy.matrix([[s - 1,  4],
-    ...                                        [4.5, 2 * (s - 1)]])
+    >>> s = tf([1,0],[1])
+    >>> G = mimotf([[(s - 1) / (s + 2), 4 / (s + 2)],
+    ...             [4.5 / (s + 2), 2 * (s - 1) / (s + 2)]])
     >>> zeros(G)
-    [4.00000000000000]
+    [4.0]
 
     Note
     ----
@@ -1953,60 +2116,39 @@ def zeros(G=None, A=None, B=None, C=None, D=None):
     '''
     # TODO create a beter function to accept parameters and switch between tf and ss
 
-    if not G is None:
-        s = sympy.Symbol('s')
-        G = sympy.Matrix(G(s))  # convert to sympy matrix object
-        #det = sympy.simplify(G.det())
-        #zero = sympy.solve(sympy.numer(det))   
-
-        Nrows, Ncols = G.shape
-        allminors = []
-        lcm = 1
-        for i in range(1,min(Nrows,Ncols)+1,1):
-            allminors = minors(G,i)
-            denominator = []
-            for m in allminors:
-                numer, denom = m.as_numer_denom()
-                lcm = sympy.lcm(lcm,denom)
-
-        allminors = minors(G,G.rank())
-        gcd_first = 1
+    if G:
+        if not (type(G) == tf or type(G) == mimotf):
+            G = sym2mimotf(G)
+        lcm = lcm_of_all_minors(G)
+        allminors = minors(G, G.shape[0])
+        gcd = None
         for m in allminors:
-            numer, denom = m.as_numer_denom()
+            numer, denom = num_denom(m,symbolic_expr=True)
             if denom != lcm:
-                numer = numer * (lcm/denom)
-            if numer.find('s') != set():
-                if gcd_first == 1:
-                    gcd_first = numer
-                    gcd = sympy.gcd(gcd_first,numer)
-                if gcd_first != 1:
-                    gcd = sympy.gcd(gcd,numer)
-        zero = sympy.solve(gcd,s)
+                numer *= denom
+            if numer.find('s'):
+                num_coeff  = [float(k) for k in numer.as_poly().all_coeffs()]
+                if not gcd:
+                    gcd = numpy.poly1d(num_coeff)
+                else:
+                    gcd = polygcd(gcd,numpy.poly1d(num_coeff))
+            else:
+                gcd = poly1d(numer)
+        zero = numpy.roots(gcd)
+        return list(set(zero))
 
-    elif not A is None:
-        z = sympy.Symbol('z')
-        top = numpy.hstack((A, B))
-        bot = numpy.hstack((C, D))
-        m = numpy.vstack((top, bot))
-        M = numpy.matrix(m)
-        [rowsA, colsA] = numpy.shape(A)
-        [rowsB, colsB] = numpy.shape(B)
-        [rowsC, colsC] = numpy.shape(C)
-        [rowsD, colsD] = numpy.shape(D)
-        p1 = numpy.eye(rowsA)
-        p2 = numpy.zeros((rowsB, colsB))
-        p3 = numpy.zeros((rowsC, colsC))
-        p4 = numpy.zeros((rowsD, colsD))
-        top = numpy.hstack((p1, p2))
-        bot = numpy.hstack((p3, p4))
-        p = numpy.vstack((top, bot))
-        Ig = sympy.Matrix(p)
-        zIg = z * Ig
-        f = zIg - M
-        zf = f.det()
-        zero = sympy.solve(zf, z)
-
-    return zero
+    elif A is not None:
+        M = numpy.bmat([[A, B],
+                        [C, D]])
+        Ig = numpy.zeros_like(M)
+        d = numpy.arange(A.shape[0])
+        Ig[d, d] = 1
+        eigvals = scipy.linalg.eigvals(M, Ig)
+        return eigvals[numpy.isfinite(eigvals) & (eigvals != 0)]
+        # TODO: Check if there are any cases where we need the symbolic method:
+        # z = sympy.Symbol('z')
+        # Ig = sympy.Matrix(Ig)
+        # return sympy.solve((M - z*Ig).det(), z)
 
 
 def pole_zero_directions(G, vec, dir_type, display_type='a', e=0.00001):
@@ -2143,7 +2285,7 @@ def BoundST(G, poles, zeros, deadtime=None):
     Nz = len(zeros)
     Yp, _ = pole_zero_directions(G, poles, 'p', 'y')
     Yz, _ = pole_zero_directions(G, zeros, 'z', 'y')
-    
+
     yp_mat1 = numpy.matrix(numpy.diag(poles)) * \
                     numpy.matrix(numpy.ones([Np, Np]))
     yp_mat2 = yp_mat1.T
@@ -2184,10 +2326,10 @@ def BoundST(G, poles, zeros, deadtime=None):
             return dead_time_matrix
 
         Q_dead = numpy.zeros((Np,Np))
-        
+
         for i in range(Np):
             for j in range(Np):
-                numerator_mat = (numpy.transpose(numpy.conjugate(Yp[:, i])) * 
+                numerator_mat = (numpy.transpose(numpy.conjugate(Yp[:, i])) *
                                    Dead_time_matrix(poles[i], dead_time_vec_max_row) * \
                                    Dead_time_matrix(poles[j], dead_time_vec_max_row) * Yp[:, j])
                 denominator_mat = poles[i] + poles[j]
@@ -2200,7 +2342,7 @@ def BoundST(G, poles, zeros, deadtime=None):
 
         # Final equation 6.19
         Ms_min = float(numpy.real(numpy.max(numpy.linalg.eig(lambda_mat)[0])))
-        
+
     return Ms_min
 
 
